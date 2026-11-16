@@ -65,5 +65,3 @@ Each feature gets one of these statuses:
 | `different` | Differs by more than 1% |
 | `missing` | One of the tools did not produce the feature |
 | `no Nyxus equivalent` | No matching Nyxus feature |
-
-Most features are `identical` or `close`. The exception is a group of GLCM features in Nyxus 0.12.1: `DifferenceAverage`, `DifferenceVariance`, `InverseVariance` and `SumAverage` are `different` whenever an ROI has empty grey-level bins. That happens in PE9f577d (both labels) and PE9f4bc5 (label 2).
