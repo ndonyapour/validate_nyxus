@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "validate-nyxus"
+version = "0.1.0"
+description = "Compare Nyxus 3D features against PyRadiomics features"
+readme = "README.md"
+# Nyxus publishes wheels for CPython 3.10-3.13 only.
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "nyxus>=0.12",
+    # PyRadiomics 3.1.0 on PyPI has no wheels for Python >= 3.10 and its sdist
+    # fails to build on modern Pythons, so install from the GitHub source.
+    "pyradiomics @ git+https://github.com/AIM-Harvard/pyradiomics.git@master",
+    "pandas",
+    "SimpleITK",
+]
+
+[project.scripts]
+compare-nyxus-pyradiomics = "compare_nyxus_pyradiomics:main"
+
+[tool.setuptools]
+py-modules = ["compare_nyxus_pyradiomics"]

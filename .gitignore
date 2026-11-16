@@ -1,0 +1,18 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Input data (patient CT volumes; large and not for version control)
+CT_volumes/
+
+# Generated outputs (recreate with ./run_all.sh)
+nyxus_out/
+pyradiomics_out/
+comparisons/
