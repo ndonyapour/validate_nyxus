@@ -2,11 +2,11 @@
 Extract Nyxus 3D features for the CT volumes in CT_volumes/.
 
 Usage:
-    python validate_nyxus.py                  # all cases
-    python validate_nyxus.py --case PE9f4fd4  # one case
+    python src/nyxus_features.py                  # all cases
+    python src/nyxus_features.py --case PE9f4fd4  # one case
 
 Inputs : CT_volumes/intensity/<case>.nii.gz and CT_volumes/segmentations/<case>.nii
-Output : nyxus_out/<case>_nyxus.csv
+Output : nyxus_out/<case>_nyxus.csv (one row per mask label)
 
 Settings are chosen to match settings_hu1.yaml (PyRadiomics):
     coarse_gray_depth=-20  PyRadiomics-style binning into 20 bins (binCount: 20) for all
@@ -24,7 +24,7 @@ from nyxus import Nyxus3D
 
 BIN_COUNT = 20  # must match binCount in settings_hu1.yaml
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 INTENSITY_DIR = ROOT / "CT_volumes" / "intensity"
 MASK_DIR = ROOT / "CT_volumes" / "segmentations"
 OUT_DIR = ROOT / "nyxus_out"

@@ -1,30 +1,41 @@
 """
-Compare Nyxus 3D features against PyRadiomics features for one case.
+Compare Nyxus and PyRadiomics features for each case and summarize across cases.
 
 Usage:
-    python compare_nyxus_pyradiomics.py pyr.txt nyxus.csv [--roi 1] [--rtol 0.01] [--atol 1e-9] [--out comparison.csv]
+    python src/compare.py                  # all cases, label 1
+    python src/compare.py --roi 2          # all cases, label 2
+    python src/compare.py --case PE9f4fd4  # one case
+    python src/compare.py --rtol 0.001     # stricter tolerance for "close"
 
-pyr.txt   : text output of the `pyradiomics` CLI (lines like Case-1_original_glcm_Contrast: 0.45)
-nyxus.csv : output of Nyxus3D.featurize_files(...).to_csv(...)
---roi     : which ROI_label row of the Nyxus CSV to use (PyRadiomics only processes one label)
---rtol    : relative tolerance for "close" (default 0.01 = 1%)
---atol    : absolute tolerance, so values near zero are not flagged (default 1e-9)
+Inputs : nyxus_out/<case>_nyxus.csv and pyradiomics_out/<case>_label<roi>.csv
+Outputs: comparisons/<case>_label<roi>.csv  one row per feature
+         comparisons/summary_label<roi>.csv one row per feature, one status column per case
 
 Two values agree when |nyx - pyr| <= atol + tol * max(|nyx|, |pyr|).
 Status per feature:
-    identical          agrees with tol = 1e-6 (same implementation, float noise only)
-    close              agrees with tol = --rtol
-    different          disagrees with tol = --rtol
-    missing            one of the tools did not produce the feature
+    identical            agrees with tol = 1e-6 (only floating-point noise)
+    close                agrees with tol = --rtol (default 0.01 = 1%)
+    different            disagrees with tol = --rtol
+    missing              one of the tools did not produce the feature
     no Nyxus equivalent  PyRadiomics feature that is not in MAPPING
 
-No conversions are applied: the Nyxus CSV must be computed with the same settings as
-PyRadiomics (see validate_nyxus.py), including the voxel spacing, so shape features are in mm.
+No conversions are applied: both tools are configured identically (see
+nyxus_features.py and settings_hu1.yaml), so shape features are in mm in both.
 """
 
 import argparse
 import csv
-import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+INTENSITY_DIR = ROOT / "CT_volumes" / "intensity"
+NYXUS_DIR = ROOT / "nyxus_out"
+PYRADIOMICS_DIR = ROOT / "pyradiomics_out"
+OUT_DIR = ROOT / "comparisons"
+
+IDENTICAL_RTOL = 1e-6
+# Least to most favourable; the summary reports the worst status across cases.
+STATUS_ORDER = ["different", "missing", "close", "identical", "no Nyxus equivalent"]
 
 # PyRadiomics feature -> Nyxus column
 # GLCM and GLRLM use the _AVE columns (PyRadiomics averages per-angle values).
@@ -139,46 +150,24 @@ MAPPING = {
     "ngtdm_Strength": "3NGTDM_STRENGTH",
 }
 
-IDENTICAL_RTOL = 1e-6
-
-
-def parse_number(text):
-    """Parse a PyRadiomics value; shape features can be printed as complex numbers like (1.5+0j)."""
-    text = text.strip()
-    try:
-        return float(text)
-    except ValueError:
-        return complex(text).real
-
 
 def read_pyradiomics(path):
+    """Read 'original_<class>_<feature>' rows, returned as '<class>_<feature>'."""
     features = {}
-    spacing = None
     with open(path) as f:
-        for line in f:
-            m = re.match(r"Case-\d+_original_(\w+?)_(\w+):\s*(\S+)\s*$", line)
-            if m:
-                try:
-                    features[f"{m.group(1)}_{m.group(2)}"] = parse_number(m.group(3))
-                except ValueError:
-                    pass
-                continue
-            m = re.match(r"Case-\d+_diagnostics_Image-original_Spacing:\s*\(([^)]*)\)", line)
-            if m:
-                spacing = [float(s) for s in m.group(1).split(",")]
-    return features, spacing
+        for r in csv.DictReader(f):
+            if r["feature"].startswith("original_"):
+                features[r["feature"].removeprefix("original_")] = float(r["value"])
+    return features
 
 
 def read_nyxus(path, roi):
     with open(path) as f:
-        rows = list(csv.DictReader(f))
-    if roi is not None:
-        rows = [r for r in rows if str(r["ROI_label"]) == str(roi)]
+        rows = [r for r in csv.DictReader(f) if str(r["ROI_label"]) == str(roi)]
     if not rows:
-        raise SystemExit(f"No row with ROI_label={roi} in {path}")
-    row = rows[0]
+        return None
     out = {}
-    for k, v in row.items():
+    for k, v in rows[0].items():
         try:
             out[k] = float(v)
         except (ValueError, TypeError):
@@ -190,62 +179,98 @@ def agrees(a, b, rtol, atol):
     return abs(a - b) <= atol + rtol * max(abs(a), abs(b))
 
 
-def rel_diff(a, b):
-    scale = max(abs(a), abs(b))
-    return abs(a - b) / scale if scale else 0.0
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("pyradiomics_txt")
-    parser.add_argument("nyxus_csv")
-    parser.add_argument("--roi", default="1")
-    parser.add_argument("--rtol", type=float, default=0.01)
-    parser.add_argument("--atol", type=float, default=1e-9)
-    parser.add_argument("--out", default="comparison.csv")
-    args = parser.parse_args()
-
-    pyr, spacing = read_pyradiomics(args.pyradiomics_txt)
-    nyx = read_nyxus(args.nyxus_csv, args.roi)
-
+def compare_case(pyr, nyx, rtol, atol):
     rows = []
     for pyr_name, nyx_name in MAPPING.items():
         pv = pyr.get(pyr_name)
         nv = nyx.get(nyx_name)
         if pv is None or nv is None:
-            rows.append([pyr_name, nyx_name, pv, nv, "", "", "missing"])
+            rows.append([pyr_name, nyx_name, pv, nv, "", "missing"])
             continue
-        if agrees(nv, pv, IDENTICAL_RTOL, args.atol):
+        if agrees(nv, pv, IDENTICAL_RTOL, atol):
             status = "identical"
-        elif agrees(nv, pv, args.rtol, args.atol):
+        elif agrees(nv, pv, rtol, atol):
             status = "close"
         else:
             status = "different"
-        rows.append([pyr_name, nyx_name, pv, nv, abs(nv - pv), rel_diff(nv, pv) * 100, status])
-
-    for pyr_name in pyr:
+        scale = max(abs(nv), abs(pv))
+        rel_diff = abs(nv - pv) / scale * 100 if scale else 0.0
+        rows.append([pyr_name, nyx_name, pv, nv, rel_diff, status])
+    for pyr_name, pv in pyr.items():
         if pyr_name not in MAPPING:
-            rows.append([pyr_name, "", pyr[pyr_name], "", "", "", "no Nyxus equivalent"])
+            rows.append([pyr_name, "", pv, "", "", "no Nyxus equivalent"])
+    return rows
 
-    with open(args.out, "w", newline="") as f:
+
+def write_csv(path, header, rows):
+    with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["pyradiomics_feature", "nyxus_feature", "pyradiomics_value", "nyxus_value",
-                    "abs_diff", "rel_diff_percent", "status"])
+        w.writerow(header)
         w.writerows(rows)
 
-    counts = {}
-    for r in rows:
-        counts[r[6]] = counts.get(r[6], 0) + 1
-    print(f"ROI_label: {args.roi}  rtol: {args.rtol}  atol: {args.atol}  spacing: {spacing}")
-    for status, n in sorted(counts.items()):
-        print(f"  {status}: {n}")
-    print(f"Wrote {args.out}")
 
-    hits = [r for r in rows if r[6] == "different"]
-    if hits:
-        print("\nDifferent:")
-        for r in hits:
-            print(f"  {r[0]:45s} pyr={r[2]:<14.6g} nyx={r[3]:<14.6g} rel_diff={r[5]:.2f}%")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--case", help="case name, e.g. PE9f4fd4 (default: all cases)")
+    parser.add_argument("--roi", type=int, default=1, help="mask label to compare (default: 1)")
+    parser.add_argument("--rtol", type=float, default=0.01, help="relative tolerance for 'close'")
+    parser.add_argument("--atol", type=float, default=1e-9, help="absolute tolerance near zero")
+    args = parser.parse_args()
+
+    if args.case:
+        cases = [args.case]
+    else:
+        cases = sorted(p.name.removesuffix(".nii.gz") for p in INTENSITY_DIR.glob("*.nii.gz"))
+
+    OUT_DIR.mkdir(exist_ok=True)
+    results = {}  # case -> rows
+    for case in cases:
+        pyr_path = PYRADIOMICS_DIR / f"{case}_label{args.roi}.csv"
+        nyx_path = NYXUS_DIR / f"{case}_nyxus.csv"
+        if not pyr_path.exists() or not nyx_path.exists():
+            print(f"Skipping {case}: missing {pyr_path.name if not pyr_path.exists() else nyx_path.name}")
+            continue
+        nyx = read_nyxus(nyx_path, args.roi)
+        if nyx is None:
+            print(f"Skipping {case}: no ROI_label {args.roi} in {nyx_path.name}")
+            continue
+
+        rows = compare_case(read_pyradiomics(pyr_path), nyx, args.rtol, args.atol)
+        write_csv(OUT_DIR / f"{case}_label{args.roi}.csv",
+                  ["pyradiomics_feature", "nyxus_feature", "pyradiomics_value", "nyxus_value",
+                   "rel_diff_percent", "status"], rows)
+        results[case] = rows
+        counts = {s: sum(1 for r in rows if r[5] == s) for s in STATUS_ORDER}
+        print(f"{case}: " + ", ".join(f"{s} {n}" for s, n in counts.items() if n))
+
+    if not results:
+        return
+
+    # Summary: one row per feature with the worst status and largest difference across cases.
+    names = {r[0]: r[1] for rows in results.values() for r in rows}
+    summary = []
+    for feat, nyx_name in names.items():
+        per_case = {case: next((r for r in rows if r[0] == feat), None) for case, rows in results.items()}
+        statuses = [r[5] if r else "missing" for r in per_case.values()]
+        worst = min(statuses, key=STATUS_ORDER.index)
+        diffs = [r[4] for r in per_case.values() if r and r[4] != ""]
+        summary.append([feat, nyx_name, worst, max(diffs) if diffs else ""] + statuses)
+    summary.sort(key=lambda r: STATUS_ORDER.index(r[2]))
+    summary_path = OUT_DIR / f"summary_label{args.roi}.csv"
+    write_csv(summary_path,
+              ["pyradiomics_feature", "nyxus_feature", "worst_status", "max_rel_diff_percent"]
+              + list(results), summary)
+
+    print(f"\nSummary over {len(results)} case(s), label {args.roi}, worst status per feature:")
+    for status in STATUS_ORDER:
+        n = sum(1 for r in summary if r[2] == status)
+        if n:
+            print(f"  {status}: {n}")
+    for r in summary:
+        if r[2] == "different":
+            bad = [case for case, s in zip(results, r[4:]) if s == "different"]
+            print(f"  different: {r[0]:42s} max rel_diff {r[3]:6.2f}%  in {', '.join(bad)}")
+    print(f"Wrote {OUT_DIR.relative_to(ROOT)}/<case>_label{args.roi}.csv and {summary_path.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
