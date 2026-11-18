@@ -14,3 +14,4 @@ CT_volumes/
 
 # Generated outputs (recreate with the scripts in src/)
 results/
+run_all.log

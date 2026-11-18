@@ -74,7 +74,8 @@ def main():
         image = read_image(images[case], args.channel)
         return image, read_mask(annotations[case], image.shape)
 
-    features_2d.run(cases, load, sorted(LABELS.values()), args.out, args.rtol, args.atol)
+    features_2d.run(cases, load, sorted(LABELS.values()), args.out, args.rtol, args.atol,
+                    args.bin_count, args.glcm_distance)
 
 
 if __name__ == "__main__":

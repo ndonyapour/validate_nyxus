@@ -45,7 +45,8 @@ def main():
     def load(case):
         return read_image(images[case]), np.load(masks[case])["label_mask"]
 
-    features_2d.run(cases, load, [1], args.out, args.rtol, args.atol)
+    features_2d.run(cases, load, [1], args.out, args.rtol, args.atol,
+                    args.bin_count, args.glcm_distance)
 
 
 if __name__ == "__main__":

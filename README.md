@@ -34,6 +34,8 @@ All scripts take the same options:
 | `--seed S` | random seed for `--n` (default: 0) |
 | `--case NAME` | only this case; repeat for more |
 | `--rtol`, `--atol` | tolerances, see [Results](#results) |
+| `--bin-count N` | grey-level bins for texture features; 0 = no binning, integer images only (default: 20) |
+| `--glcm-distance D` | GLCM neighbour distance (default: 1) |
 | `--out DIR` | output folder (default: `results/<dataset>/`) |
 
 ```bash
@@ -43,6 +45,7 @@ uv run src/adni_3d.py --n 10                 # 10 random ADNI cases, whole brain
 uv run src/adni_3d.py --n 10 --mask hippocampus
 uv run src/xray_2d.py --n 10
 uv run src/grape_2d.py --n 10                # green channel; --channel red/blue/gray
+uv run src/xray_2d.py --n 10 --bin-count 64  # writes to results/xray_2d/bins64_d1/
 ```
 
 Run any script with `--help` to see all its options.
@@ -51,13 +54,16 @@ Each run writes, for every case and label:
 
 ```
 results/<dataset>/
+  settings.txt                                 bin count and GLCM distance used
   nyxus_out/<case>_nyxus.csv                   one row per label
   pyradiomics_out/<case>_label<roi>.csv
   comparisons/<case>_label<roi>.csv            one row per feature
-  comparisons/summary_label<roi>.csv           one row per feature, one status column per case
+  comparisons/summary_label<roi>.csv           one row per feature: worst status, number of
+                                               cases that agree, largest difference, and one
+                                               status column per case
 ```
 
-ADNI writes to `results/adni_3d/<mask>/`.
+ADNI writes to `results/adni_3d/<mask>/`. A non-default `--bin-count` or `--glcm-distance` writes to a `bins<N>_d<D>/` subfolder, so runs with different settings don't overwrite each other.
 
 ## Code
 
@@ -89,12 +95,14 @@ Both tools are configured to compute the same quantities:
 | | PyRadiomics | Nyxus |
 |---|---|---|
 | Settings | `settings_3d.yaml`, `settings_2d.yaml` | `src/features_3d.py`, `src/features_2d.py` |
-| Grey-level binning | `binCount: 20` | `coarse_gray_depth=-20` |
+| Grey-level binning (`--bin-count N`) | `binCount: N` | `coarse_gray_depth=-N` |
+| No binning (`--bin-count 0`) | `binWidth: 1` | `coarse_gray_depth=0` |
+| GLCM distance (`--glcm-distance D`) | `distances: [D]`, GLCM only | `glcm/offset=D`, `3glcm/offset=D` |
 | Voxel spacing (3D) | from the image | `anisotropy_x/y/z` from the image |
 | Resampling | none | none |
 | 2D | `force2D` on a single-slice volume | `Nyxus` (2D) on the array |
 
-If you change `binCount`, change `BIN_COUNT` in the matching `features_*.py` too.
+The command-line options override the yaml files, which keep the defaults (20 bins, distance 1).
 
 ## Results
 
@@ -113,5 +121,8 @@ The percentage is `|nyxus - pyradiomics| / max(|nyxus|, |pyradiomics|) * 100`.
 ## Known differences
 
 - **Float images (ADNI)**: Nyxus 0.12.1 truncates floating-point NIfTI intensities to integers ([raw_nifti.h#L373](https://github.com/PolusAI/nyxus/blob/v0.12.1/src/nyx/raw_nifti.h#L373)), while PyRadiomics keeps them. This causes 1-4% differences in some texture features on small ROIs such as the hippocampus.
+- **GLCM with empty grey-level bins**: Nyxus builds the GLCM sum and difference distributions from positions in the list of grey levels present, not from the grey levels themselves ([3d_glcm.cpp#L376-L403](https://github.com/PolusAI/nyxus/blob/v0.12.1/src/nyx/features/3d_glcm.cpp#L376-L403), same code in 2D in [glcm.cpp#L485-L512](https://github.com/PolusAI/nyxus/blob/v0.12.1/src/nyx/features/glcm.cpp#L485-L512)). When a ROI leaves a bin empty, DifferenceAverage, DifferenceVariance, InverseVariance and SumAverage are wrong (up to 98% off on CT); Contrast and JointAverage are not affected.
 - **2D GLSZM**: the Nyxus 2D zone search only steps right and down ([glszm.cpp#L124-L165](https://github.com/PolusAI/nyxus/blob/v0.12.1/src/nyx/features/glszm.cpp#L124-L165)), so zones that bend back up or left are split. All 2D GLSZM features differ.
+- **No binning (`--bin-count 0`)**: PyRadiomics renumbers the grey levels from 1 at the ROI minimum, while Nyxus keeps the image's values. Features of the level values themselves (JointAverage, Autocorrelation, the `*GrayLevel*Emphasis` family) therefore differ, while features of level differences or counts (Contrast, the run, zone and dependence counts) agree. Nyxus' `ENTROPY` and `UNIFORMITY` also switch to 24 bins.
+- **GLCM distance above 1**: PyRadiomics uses every offset at Chebyshev distance D (8 directions in 2D at D = 2, 49 in 3D), while Nyxus scales its 4 (2D) or 13 (3D) unit directions by D. The two definitions agree only at D = 1; at D = 2 GLCM features differ by 1-4% on an X-ray and up to 50% on CT.
 - **2D perimeter**: `shape2D_Perimeter` is mapped to `PERIMETER` and `shape2D_Sphericity` to `CIRCULARITY`. Each pair uses the same formula, but the two tools measure the perimeter differently, so these pairs disagree by design.

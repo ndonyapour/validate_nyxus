@@ -17,11 +17,15 @@ import random
 from pathlib import Path
 
 import numpy as np
+from radiomics import featureextractor
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = ROOT / "results"
 
 IDENTICAL_RTOL = 1e-6
+# Defaults of --bin-count and --glcm-distance; the yaml files hold the same values.
+BIN_COUNT = 20
+GLCM_DISTANCE = 1
 # Least to most favourable; the summary reports the worst status across cases.
 STATUS_ORDER = ["different", "missing", "close", "identical", "no Nyxus equivalent"]
 
@@ -34,9 +38,59 @@ def make_parser(description, out):
     parser.add_argument("--case", action="append", help="run only this case (repeatable)")
     parser.add_argument("--rtol", type=float, default=0.01, help="relative tolerance for 'close'")
     parser.add_argument("--atol", type=float, default=1e-9, help="absolute tolerance near zero")
+    parser.add_argument("--bin-count", type=int, default=BIN_COUNT,
+                        help=f"grey-level bins for texture features; 0 = no binning, for integer "
+                             f"images only (default: {BIN_COUNT})")
+    parser.add_argument("--glcm-distance", type=int, default=GLCM_DISTANCE,
+                        help=f"GLCM neighbour distance (default: {GLCM_DISTANCE})")
     parser.add_argument("--out", type=Path, default=out,
-                        help=f"output folder (default: {out.relative_to(ROOT)})")
+                        help=f"output folder (default: {out.relative_to(ROOT)}); non-default "
+                             f"--bin-count/--glcm-distance write to a subfolder such as bins64_d2")
     return parser
+
+
+def settings_dir(out_dir, bin_count, glcm_distance):
+    """out_dir for the default settings, else a subfolder named after them, so runs don't overwrite."""
+    if (bin_count, glcm_distance) == (BIN_COUNT, GLCM_DISTANCE):
+        return out_dir
+    return out_dir / f"bins{bin_count}_d{glcm_distance}"
+
+
+def write_settings(out_dir, settings, bin_count, glcm_distance):
+    (out_dir / "settings.txt").write_text(
+        f"pyradiomics_settings: {settings.name}\nbin_count: {bin_count}\nglcm_distance: {glcm_distance}\n")
+
+
+def make_pyradiomics(settings, bin_count, glcm_distance):
+    """execute(image, mask, label) running PyRadiomics with `settings`, overridden by these values.
+
+    --bin-count 0 means bins of width 1, i.e. no binning of integer images. PyRadiomics' `distances`
+    also changes GLDM and NGTDM, while Nyxus' glcm/offset changes only GLCM, so another GLCM
+    distance is computed by a second, GLCM-only extractor.
+
+    Expected differences outside the defaults, both conventions rather than errors:
+    - --bin-count 0: PyRadiomics renumbers grey levels from 1 at the ROI minimum, Nyxus keeps the
+      image's values, so features of the level values themselves (JointAverage, *GrayLevel*Emphasis,
+      Autocorrelation, ...) differ; those of level differences or counts agree. Nyxus' ENTROPY and
+      UNIFORMITY also switch to 24 bins.
+    - --glcm-distance D > 1: PyRadiomics uses every offset at Chebyshev distance D (4D directions in
+      2D, 8 at D = 2), Nyxus its 4 (2D) or 13 (3D) unit directions scaled by D. Same at D = 1.
+    """
+    binning = {"binCount": None, "binWidth": 1} if bin_count == 0 else {"binCount": bin_count}
+    extractor = featureextractor.RadiomicsFeatureExtractor(str(settings), **binning)
+    if glcm_distance == GLCM_DISTANCE:
+        return lambda image, mask, label: extractor.execute(image, mask, label=label)
+
+    extractor.enableFeatureClassByName("glcm", enabled=False)
+    glcm = featureextractor.RadiomicsFeatureExtractor(str(settings), **binning, distances=[glcm_distance])
+    glcm.disableAllFeatures()
+    glcm.enableFeatureClassByName("glcm")
+
+    def execute(image, mask, label):
+        result = extractor.execute(image, mask, label=label)
+        result.update(glcm.execute(image, mask, label=label))
+        return result
+    return execute
 
 
 def select_cases(parser, args, available):
@@ -136,20 +190,22 @@ def write_case(out_dir, case, roi, rows):
 
 
 def write_summary(out_dir, roi, results):
-    """One row per feature with the worst status and largest difference across cases."""
+    """One row per feature with the worst status, the number of cases that agree (identical or
+    close), and the largest difference across cases."""
     names = {r[0]: r[1] for rows in results.values() for r in rows}
     summary = []
     for feat, nyx_name in names.items():
         per_case = {case: next((r for r in rows if r[0] == feat), None) for case, rows in results.items()}
         statuses = [r[5] if r else "missing" for r in per_case.values()]
         worst = min(statuses, key=STATUS_ORDER.index)
+        n_agree = sum(s in ("identical", "close") for s in statuses)
         diffs = [r[4] for r in per_case.values() if r and r[4] != ""]
-        summary.append([feat, nyx_name, worst, max(diffs) if diffs else ""] + statuses)
+        summary.append([feat, nyx_name, worst, n_agree, max(diffs) if diffs else ""] + statuses)
     summary.sort(key=lambda r: STATUS_ORDER.index(r[2]))
     summary_path = out_dir / f"summary_label{roi}.csv"
     write_csv(summary_path,
-              ["pyradiomics_feature", "nyxus_feature", "worst_status", "max_rel_diff_percent"]
-              + list(results), summary)
+              ["pyradiomics_feature", "nyxus_feature", "worst_status", "cases_agreeing",
+               "max_rel_diff_percent"] + list(results), summary)
 
     print(f"\nSummary over {len(results)} case(s), label {roi}, worst status per feature:")
     for status in STATUS_ORDER:
@@ -158,6 +214,7 @@ def write_summary(out_dir, roi, results):
             print(f"  {status}: {n}")
     for r in summary:
         if r[2] == "different":
-            bad = [case for case, s in zip(results, r[4:]) if s == "different"]
-            print(f"  different: {r[0]:42s} max rel_diff {r[3]:6.2f}%  in {', '.join(bad)}")
+            bad = [case for case, s in zip(results, r[5:]) if s == "different"]
+            print(f"  different: {r[0]:42s} max rel_diff {r[4]:6.2f}%  "
+                  f"agree {r[3]}/{len(results)}  in {', '.join(bad)}")
     print(f"Wrote {summary_path}")

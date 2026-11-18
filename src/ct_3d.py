@@ -37,7 +37,8 @@ def main():
             mask = mask_dir / f"{case}.nii.gz"
         return intensity_dir / f"{case}.nii.gz", mask
 
-    features_3d.run(cases, paths, args.labels, args.out, args.rtol, args.atol)
+    features_3d.run(cases, paths, args.labels, args.out, args.rtol, args.atol,
+                    args.bin_count, args.glcm_distance)
 
 
 if __name__ == "__main__":

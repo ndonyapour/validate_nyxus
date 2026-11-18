@@ -2,7 +2,7 @@
 # Matches settings_3d.yaml except that features are computed in 2D.
 
 setting:
-  binCount: 20          # must match BIN_COUNT in src/features_2d.py
+  binCount: 20          # default; --bin-count overrides it (see src/common.py)
   label: 1
   force2D: true         # the image is passed as a single-slice volume
   force2Ddimension: 0   # the slice axis

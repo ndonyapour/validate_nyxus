@@ -48,7 +48,8 @@ def main():
             pairs[stem.removesuffix("_0000")] = (image, mask)
     cases = select_cases(parser, args, pairs)
 
-    features_3d.run(cases, pairs.get, [1], args.out / args.mask, args.rtol, args.atol)
+    features_3d.run(cases, pairs.get, [1], args.out / args.mask, args.rtol, args.atol,
+                    args.bin_count, args.glcm_distance)
 
 
 if __name__ == "__main__":

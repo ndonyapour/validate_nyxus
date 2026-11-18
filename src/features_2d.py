@@ -4,15 +4,18 @@ Shared 2D pipeline: extract Nyxus and PyRadiomics features from in-memory images
 Used by xray_2d.py and grape_2d.py. For each case, load(case) returns a 2D integer image and a
 2D label mask of the same shape; every label in `labels` is compared separately.
 
-Outputs (under out_dir):
+Outputs (under out_dir, or its bins<N>_d<D> subfolder for non-default settings):
+    settings.txt                                bin count and GLCM distance used
     nyxus_out/<case>_nyxus.csv                  one row per mask label
     pyradiomics_out/<case>_label<roi>.csv
     comparisons/<case>_label<roi>.csv and comparisons/summary_label<roi>.csv
 
 Both tools are configured to compute the same quantities:
-    coarse_gray_depth=-20  PyRadiomics-style binning into 20 bins (binCount: 20 in
-                           settings_2d.yaml)
+    coarse_gray_depth=-N   PyRadiomics-style binning into N bins (binCount: N); N = 0 bins
+                           nothing in Nyxus and uses binWidth: 1 in PyRadiomics
+    glcm/offset=D          GLCM neighbour distance (distances: [D], GLCM only)
     force2D                PyRadiomics gets a single-slice volume and computes 2D features
+For N = 0 and D > 1 the tools define some features differently; see make_pyradiomics in common.py.
 """
 
 import logging
@@ -21,13 +24,11 @@ import time
 import numpy as np
 import SimpleITK as sitk
 from nyxus import Nyxus
-from radiomics import featureextractor
 
-from common import (ROOT, compare_case, read_nyxus, read_pyradiomics, write_case, write_pyradiomics,
-                    write_summary)
+from common import (ROOT, compare_case, make_pyradiomics, read_nyxus, read_pyradiomics,
+                    settings_dir, write_case, write_pyradiomics, write_settings, write_summary)
 from features_3d import MAPPING_3D
 
-BIN_COUNT = 20  # must match binCount in settings_2d.yaml
 SETTINGS = ROOT / "settings_2d.yaml"
 
 # PyRadiomics feature -> Nyxus 2D column.
@@ -47,16 +48,19 @@ NYXUS_FEATURES = ["*ALL_INTENSITY*", "*ALL_GLCM*", "*ALL_GLRLM*", "*ALL_GLSZM*",
                   "*ALL_NGTDM*"] + SHAPE_FEATURES
 
 
-def run(cases, load, labels, out_dir, rtol, atol):
+def run(cases, load, labels, out_dir, rtol, atol, bin_count, glcm_distance):
+    out_dir = settings_dir(out_dir, bin_count, glcm_distance)
     nyxus_dir = out_dir / "nyxus_out"
     pyradiomics_dir = out_dir / "pyradiomics_out"
     comparisons_dir = out_dir / "comparisons"
     for d in (nyxus_dir, pyradiomics_dir, comparisons_dir):
         d.mkdir(parents=True, exist_ok=True)
+    write_settings(out_dir, SETTINGS, bin_count, glcm_distance)
 
     logging.getLogger("radiomics").setLevel(logging.ERROR)
-    extractor = featureextractor.RadiomicsFeatureExtractor(str(SETTINGS))
-    nyx = Nyxus(NYXUS_FEATURES, coarse_gray_depth=-BIN_COUNT)
+    pyradiomics = make_pyradiomics(SETTINGS, bin_count, glcm_distance)
+    nyx = Nyxus(NYXUS_FEATURES, coarse_gray_depth=-bin_count)
+    nyx.set_metaparam(f"glcm/offset={glcm_distance}")
 
     results = {roi: {} for roi in labels}  # roi -> case -> rows
     for case in cases:
@@ -81,7 +85,7 @@ def run(cases, load, labels, out_dir, rtol, atol):
                 print(f"  label {roi}: not in the mask, skipped")
                 continue
             start_time = time.perf_counter()
-            result = extractor.execute(sitk_image, sitk_mask, label=roi)
+            result = pyradiomics(sitk_image, sitk_mask, roi)
             pyr_time = time.perf_counter() - start_time
             pyr_path = pyradiomics_dir / f"{case}_label{roi}.csv"
             write_pyradiomics(pyr_path, result)

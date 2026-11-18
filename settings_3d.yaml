@@ -8,7 +8,7 @@
 
 setting:
   #--- not using binWidth, using binCount for compatibility with Nyxus --- binWidth: 25
-  binCount: 20  # must match BIN_COUNT in src/features_3d.py
+  binCount: 20  # default; --bin-count overrides it (see src/common.py)
   label: 1
   interpolator: 'sitkBSpline' # This is an enumerated value, here None is not allowed
   resampledPixelSpacing: # This disables resampling, as it is interpreted as None, to enable it, specify spacing in x, y, z as [x, y , z]

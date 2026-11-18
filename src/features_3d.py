@@ -4,16 +4,20 @@ Shared 3D pipeline: extract Nyxus and PyRadiomics features from NIfTI files and 
 Used by ct_3d.py and adni_3d.py. For each case, paths(case) returns the intensity and mask
 files; every label in `labels` is compared separately.
 
-Outputs (under out_dir):
+Outputs (under out_dir, or its bins<N>_d<D> subfolder for non-default settings):
+    settings.txt                                bin count and GLCM distance used
     nyxus_out/<case>_nyxus.csv                  one row per mask label
     pyradiomics_out/<case>_label<roi>.csv
     comparisons/<case>_label<roi>.csv and comparisons/summary_label<roi>.csv
 
 Both tools are configured to compute the same quantities, so no conversions are applied:
-    coarse_gray_depth=-20  PyRadiomics-style binning into 20 bins (binCount: 20 in
-                           settings_3d.yaml) for all texture families and 3ENTROPY / 3UNIFORMITY
+    coarse_gray_depth=-N   PyRadiomics-style binning into N bins (binCount: N) for all texture
+                           families and 3ENTROPY / 3UNIFORMITY; N = 0 bins nothing in Nyxus and
+                           uses binWidth: 1 in PyRadiomics
+    3glcm/offset=D         GLCM neighbour distance (distances: [D], GLCM only)
     anisotropy_x/y/z       the voxel spacing from the NIfTI header, so shape features are in mm
                            like PyRadiomics instead of voxel units
+For N = 0 and D > 1 the tools define some features differently; see make_pyradiomics in common.py.
 
 Nyxus 0.12.1 truncates floating-point NIfTI intensities to integers; PyRadiomics does not.
 """
@@ -23,12 +27,10 @@ import time
 
 import SimpleITK as sitk
 from nyxus import Nyxus3D
-from radiomics import featureextractor
 
-from common import (ROOT, compare_case, read_nyxus, read_pyradiomics, write_case, write_pyradiomics,
-                    write_summary)
+from common import (ROOT, compare_case, make_pyradiomics, read_nyxus, read_pyradiomics,
+                    settings_dir, write_case, write_pyradiomics, write_settings, write_summary)
 
-BIN_COUNT = 20  # must match binCount in settings_3d.yaml
 SETTINGS = ROOT / "settings_3d.yaml"
 
 # PyRadiomics feature -> Nyxus column
@@ -145,15 +147,17 @@ MAPPING_3D = {
 }
 
 
-def run(cases, paths, labels, out_dir, rtol, atol):
+def run(cases, paths, labels, out_dir, rtol, atol, bin_count, glcm_distance):
+    out_dir = settings_dir(out_dir, bin_count, glcm_distance)
     nyxus_dir = out_dir / "nyxus_out"
     pyradiomics_dir = out_dir / "pyradiomics_out"
     comparisons_dir = out_dir / "comparisons"
     for d in (nyxus_dir, pyradiomics_dir, comparisons_dir):
         d.mkdir(parents=True, exist_ok=True)
+    write_settings(out_dir, SETTINGS, bin_count, glcm_distance)
 
     logging.getLogger("radiomics").setLevel(logging.ERROR)
-    extractor = featureextractor.RadiomicsFeatureExtractor(str(SETTINGS))
+    pyradiomics = make_pyradiomics(SETTINGS, bin_count, glcm_distance)
 
     results = {roi: {} for roi in labels}  # roi -> case -> rows
     for case in cases:
@@ -167,8 +171,9 @@ def run(cases, paths, labels, out_dir, rtol, atol):
         reader.SetFileName(str(intensity))
         reader.ReadImageInformation()  # header only
         sx, sy, sz = reader.GetSpacing()
-        nyx = Nyxus3D(["*3D_ALL*"], coarse_gray_depth=-BIN_COUNT,
+        nyx = Nyxus3D(["*3D_ALL*"], coarse_gray_depth=-bin_count,
                       anisotropy_x=sx, anisotropy_y=sy, anisotropy_z=sz)
+        nyx.set_metaparam(f"3glcm/offset={glcm_distance}")
 
         # Nyxus resolves relative paths against /, so pass absolute ones.
         start_time = time.perf_counter()
@@ -185,7 +190,7 @@ def run(cases, paths, labels, out_dir, rtol, atol):
                 print(f"  label {roi}: not in the mask, skipped")
                 continue
             start_time = time.perf_counter()
-            result = extractor.execute(str(intensity), str(mask), label=roi)
+            result = pyradiomics(str(intensity), str(mask), roi)
             pyr_time = time.perf_counter() - start_time
             pyr_path = pyradiomics_dir / f"{case}_label{roi}.csv"
             write_pyradiomics(pyr_path, result)
