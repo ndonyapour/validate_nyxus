@@ -15,6 +15,12 @@ uv sync
 
 This creates `.venv` with Python 3.12 and installs Nyxus and PyRadiomics.
 
+The INSPECT lung lobes are segmented with TotalSegmentator, which needs PyTorch. Install it only if you need to segment:
+
+```bash
+uv sync --extra segmentation
+```
+
 ## Run
 
 There is one script per dataset. Each one extracts features with both tools and compares them:
@@ -23,6 +29,7 @@ There is one script per dataset. Each one extracts features with both tools and 
 |---|---|---|
 | `src/ct_3d.py` | CT volumes | `--labels` (default 1) |
 | `src/adni_3d.py` | ADNI brain MRI, Nyul-normalized | 1: whole brain or hippocampus (`--mask`) |
+| `src/inspect_3d.py` | INSPECT CTPA with TotalSegmentator lung lobes | 10–14: the five lobes (`--lobes`) |
 | `src/xray_2d.py` | ChestX-ray14 with CheXmask lung masks | 1: lungs |
 | `src/grape_2d.py` | GRAPE fundus photos | 1: optic disc rim, 2: optic cup |
 
@@ -43,6 +50,7 @@ uv run src/ct_3d.py                          # all CT cases, label 1
 uv run src/ct_3d.py --labels 1 2             # labels 1 and 2
 uv run src/adni_3d.py --n 10                 # 10 random ADNI cases, whole brain
 uv run src/adni_3d.py --n 10 --mask hippocampus
+uv run src/inspect_3d.py --n 10              # 10 random INSPECT scans, all five lobes
 uv run src/xray_2d.py --n 10
 uv run src/grape_2d.py --n 10                # green channel; --channel red/blue/gray
 uv run src/xray_2d.py --n 10 --bin-count 64  # writes to results/xray_2d/bins64_d1/
@@ -73,6 +81,7 @@ ADNI writes to `results/adni_3d/<mask>/`. A non-default `--bin-count` or `--glcm
 | `src/features_3d.py` | 3D extraction from NIfTI files, and the PyRadiomics to Nyxus feature mapping |
 | `src/features_2d.py` | 2D extraction from in-memory images, and the 2D feature mapping |
 | `src/<dataset>_3d.py`, `src/<dataset>_2d.py` | where each dataset's images and masks are, and how to read them |
+| `src/segment_inspect.py` | TotalSegmentator lung-lobe segmentation for INSPECT |
 
 ## Data
 
@@ -84,6 +93,7 @@ CT_volumes/
   segmentations/<case>.nii       (or .nii.gz)
 ```
 
+- **INSPECT**: the CTPA scans are read from `<root>/<case>.nii.gz`. Segment them first with `uv run --extra segmentation src/segment_inspect.py`, which runs TotalSegmentator (`total_v3`, lobes only, one multilabel mask per scan) and writes the masks to `results/inspect_3d/segmentations/`. It skips scans that already have a mask, so you can stop and restart it. It is slow on a CPU; use `--device gpu` (the default) on a CUDA machine or `--device mps` on a Mac. The labels are 10 left upper, 11 left lower, 12 right upper, 13 right middle and 14 right lower lobe.
 - **ADNI**: the BrainIAC masks cover the whole brain. The hippocampus masks merge the left and right SynthSeg hippocampus labels into label 1.
 - **ChestX-ray14**: the 8-bit PNGs are paired with the `label_mask` array in each CheXmask `.npz`.
 - **GRAPE**: the LabelMe polygons in `json/` are drawn on `ROI_images/`. The cup lies inside the disc, so label 1 is the rim (disc minus cup) and label 2 is the cup.

@@ -32,6 +32,10 @@ run() {
     fi
 }
 
+min() { echo $(( $1 < $2 ? $1 : $2 )); }
+# number of INSPECT scans with a lobe mask
+n_inspect() { ls results/inspect_3d/segmentations/ 2>/dev/null | grep -v partial | grep -c '\.nii\.gz$'; }
+
 # run_datasets <n 2D> <n 3D> <bins>
 run_datasets() {
     local n2d=$1 n3d=$2 bins=$3
@@ -40,6 +44,8 @@ run_datasets() {
     run "ct_3d_bins$bins"               src/ct_3d.py    --bin-count "$bins"  # only 5 cases: all of them
     run "adni_3d_hippocampus_bins$bins" src/adni_3d.py  --n "$n3d" --bin-count "$bins" --mask hippocampus
     run "adni_3d_brain_bins$bins"       src/adni_3d.py  --n "$n3d" --bin-count "$bins" --mask brain
+    # needs the lobe masks from src/segment_inspect.py; uses every segmented scan if fewer than n3d
+    run "inspect_3d_bins$bins"          src/inspect_3d.py --n "$(min "$n3d" "$(n_inspect)")" --bin-count "$bins"
 }
 
 run_datasets "$N2D" "$N3D" 20
